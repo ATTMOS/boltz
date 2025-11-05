@@ -7,7 +7,6 @@ import click
 import numpy as np
 from Bio import Align
 from chembl_structure_pipeline.exclude_flag import exclude_flag
-from chembl_structure_pipeline.standardizer import standardize_mol
 from rdkit import Chem, rdBase
 from rdkit.Chem import AllChem, HybridizationType
 from rdkit.Chem.MolStandardize import rdMolStandardize
@@ -1833,30 +1832,32 @@ def parse_boltz_schema(  # noqa: C901, PLR0915, PLR0912
         extra_mols=extra_mols,
     )
 
-
 def standardize(smiles: str) -> Optional[str]:
-    """Standardize a molecule and return its SMILES and a flag indicating whether the molecule is valid.
-    This version has exception handling, which the original in mol-finder/data doesn't have. I didn't change the mol-finder/data
-    since there are a lot of other functions that depend on it and I didn't want to break them.
+    """
+    Minimal standardization:
+    - keep the largest fragment (drop counterions, solvents, etc.)
+    - DO NOT run ChEMBL standardize_mol (no neutralization / protonation changes)
     """
     LARGEST_FRAGMENT_CHOOSER = rdMolStandardize.LargestFragmentChooser()
 
+    # Parse SMILES (with basic sanitization so RDKit understands the chemistry)
     mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    if mol is None:
+        raise ValueError(f"Could not parse SMILES: {smiles}")
 
+    # Apply ChEMBL's exclude checks (but no extra RDKit sanitization)
     exclude = exclude_flag(mol, includeRDKitSanitization=False)
-
     if exclude:
         raise ValueError("Molecule is excluded")
 
-    # Standardize with ChEMBL data curation pipeline. During standardization, the molecule may be broken
-    # Choose molecule with largest component
+    # Keep only the largest fragment (e.g., drop Na+, Cl−, solvent, etc.)
     mol = LARGEST_FRAGMENT_CHOOSER.choose(mol)
-    # Standardize with ChEMBL data curation pipeline. During standardization, the molecule may be broken
-    mol = standardize_mol(mol)
-    smiles = Chem.MolToSmiles(mol)
 
-    # Check if molecule can be parsed by RDKit (in rare cases, the molecule may be broken during standardization)
-    if Chem.MolFromSmiles(smiles) is None:
+    # IMPORTANT: we do *not* call standardize_mol(mol) here
+    smiles_std = Chem.MolToSmiles(mol)  # canonical representation, but same protonation/charge
+
+    # Safety check: ensure RDKit can still parse the result
+    if Chem.MolFromSmiles(smiles_std) is None:
         raise ValueError("Molecule is broken")
 
-    return smiles
+    return smiles_std
